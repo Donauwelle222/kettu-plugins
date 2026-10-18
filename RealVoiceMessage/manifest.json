@@ -1,0 +1,7 @@
+{
+  "name": "RealVoiceMessage",
+  "description": "Wysyla dowolny plik audio jako PRAWDZIWA glosowke Discorda (ustawia te sama flage/waveform/duration co oficjalny klient), widoczna poprawnie u kazdego odbiorcy - nie tylko w Kettu.",
+  "authors": [{ "name": "Juniorsky", "id": "0" }],
+  "main": "index.js",
+  "version": "1.0.0"
+}
