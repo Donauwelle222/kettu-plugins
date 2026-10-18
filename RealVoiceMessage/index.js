@@ -73,8 +73,14 @@
             var filename = item && (item.filename || item.name);
 
             var dump = safeKeys(a0, 3);
-            toast("RVM[" + name + "] mime=" + mime + " file=" + filename);
-            log("RVM[" + name + "] arg dump:", JSON.stringify(dump));
+            var dumpStr = JSON.stringify(dump);
+            log("RVM[" + name + "] arg dump:", dumpStr);
+            try {
+              vendetta.metro.common.clipboard.setString("RVM[" + name + "] mime=" + mime + " file=" + filename + "\n" + dumpStr);
+              toast("RVM[" + name + "]: dump w schowku, wklej Tomkowi");
+            } catch (ce) {
+              toast("RVM[" + name + "] mime=" + mime + " file=" + filename + " (clipboard blad: " + ce + ")");
+            }
 
             if (item && isAudio(mime, filename)) {
               item.mimeType = "audio/ogg";
