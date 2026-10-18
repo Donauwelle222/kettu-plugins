@@ -41,11 +41,11 @@
       report.endpointsModKeys = safeKeys(["Endpoints"]);
       report.httpClientModKeys = safeKeys(["HTTPClient"]);
 
-      report.typeofFetch = typeof global.fetch;
-      report.typeofXHR = typeof global.XMLHttpRequest;
+      report.typeofFetch = typeof globalThis.fetch;
+      report.typeofXHR = typeof globalThis.XMLHttpRequest;
       report.fetchDescriptor = (function () {
         try {
-          var d = Object.getOwnPropertyDescriptor(global, "fetch");
+          var d = Object.getOwnPropertyDescriptor(globalThis, "fetch");
           return d ? JSON.stringify({ writable: d.writable, configurable: d.configurable, hasGetSet: !!(d.get || d.set) }) : "no-descriptor";
         } catch (e) {
           return "err:" + e;
