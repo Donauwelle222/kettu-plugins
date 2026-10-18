@@ -1,8 +1,15 @@
 {
   "name": "RealVoiceMessage",
   "description": "Wysyla kazdy samodzielny plik audio jako PRAWDZIWA glosowke Discorda (flaga/waveform/duration na wiadomosci) - widoczna poprawnie u kazdego odbiorcy, nie tylko w Kettu.",
-  "authors": [{ "name": "anon", "id": "0" }],
+  "authors": [
+    {
+      "name": "anon",
+      "id": "0"
+    }
+  ],
   "main": "index.js",
-  "vendetta": { "icon": "voice_bar_mute_off" },
-  "hash": "39287aad58103c864406b40834596feddd500bd08740098b6ee0b1522144af2b"
+  "vendetta": {
+    "icon": "voice_bar_mute_off"
+  },
+  "hash": "2b87eb95d7f5bed15d962f2d22d031a7482f14262ff520db4d3ef6ea45bb6687"
 }

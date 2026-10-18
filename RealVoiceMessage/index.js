@@ -97,14 +97,21 @@
       var unpatch = vendetta.patcher.before("post", RestAPI, function (args) {
         try {
           var config = args[0];
+          var url = config && config.url;
+          var attCount = config && config.body && config.body.attachments ? config.body.attachments.length : -1;
+          toast("RVM post: " + url + " att=" + attCount);
+          log("post widziany:", url, "attachments:", attCount, "body:", JSON.stringify(config && config.body));
+
           if (!config || typeof config.url !== "string") return;
           if (!/\/channels\/\d+\/messages$/.test(config.url)) return;
 
           if (transformBody(config.body)) {
             log("Wyslano jako glosowke, url:", config.url);
+            toast("RVM: oznaczono jako glosowke!");
           }
         } catch (e) {
           err("Blad podczas przechwytywania zapytania:", e);
+          toast("RVM blad w patchu: " + e);
         }
       });
       unpatchers.push(unpatch);
