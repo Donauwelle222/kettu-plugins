@@ -1,7 +1,18 @@
 (function () {
+  var VOICE_MESSAGE_FLAG = 1 << 13; // 8192
+  var DEFAULT_WAVEFORM = "AEtWPyUaGA4OEAcA";
+  var DEFAULT_DURATION = 4;
+
+  var unpatchers = [];
+
   function log() {
     try {
       vendetta.logger.log.apply(null, ["[RealVoiceMessage]"].concat(Array.prototype.slice.call(arguments)));
+    } catch (e) {}
+  }
+  function err() {
+    try {
+      vendetta.logger.error.apply(null, ["[RealVoiceMessage]"].concat(Array.prototype.slice.call(arguments)));
     } catch (e) {}
   }
   function toast(msg) {
@@ -15,54 +26,163 @@
     } catch (e) {}
   }
 
-  function safeKeys(names) {
+  function isMessagesUrl(url) {
+    return typeof url === "string" && /\/channels\/\d+\/messages(\?.*)?$/.test(url);
+  }
+
+  function isAudioFilename(fn) {
+    return /\.(ogg|opus|mp3|m4a|wav|aac|flac)$/i.test(String(fn || ""));
+  }
+
+  function tryInjectVoiceFlags(bodyStr, tag) {
     try {
-      var mod = vendetta.metro.findByProps.apply(null, names);
-      if (!mod) return null;
-      try {
-        return Object.keys(mod);
-      } catch (e2) {
-        return "keys-error:" + e2;
-      }
+      var body = JSON.parse(bodyStr);
+
+      clip("RVM[" + tag + "] RAW body przed zmiana:\n" + JSON.stringify(body));
+
+      var atts = body && body.attachments;
+      if (!Array.isArray(atts) || atts.length !== 1) return null;
+
+      var contentEmpty = !body.content || String(body.content).trim() === "";
+      if (!contentEmpty) return null;
+
+      var att = atts[0];
+      if (!isAudioFilename(att.filename)) return null;
+
+      body.flags = (body.flags | 0) | VOICE_MESSAGE_FLAG;
+      if (att.duration_secs === undefined || att.duration_secs === null) att.duration_secs = DEFAULT_DURATION;
+      if (!att.waveform) att.waveform = DEFAULT_WAVEFORM;
+
+      var out = JSON.stringify(body);
+      toast("RVM[" + tag + "]: wstrzykniety flags=" + body.flags + " w realnym requescie");
+      clip("RVM[" + tag + "] body PO zmianie:\n" + out);
+      log("RVM[" + tag + "] zmieniono body:", out);
+      return out;
     } catch (e) {
-      return "find-error:" + e;
+      err("tryInjectVoiceFlags blad:", e);
+      toast("RVM[" + tag + "] blad parsowania: " + e);
+      return null;
     }
+  }
+
+  function patchFetch() {
+    var origFetch = globalThis.fetch;
+    if (typeof origFetch !== "function") {
+      log("globalThis.fetch niedostepny.");
+      return null;
+    }
+
+    globalThis.fetch = function (input, init) {
+      try {
+        var url = typeof input === "string" ? input : input && input.url;
+        var method = (init && init.method) || (typeof input === "object" && input && input.method) || "GET";
+
+        if (isMessagesUrl(url) && String(method).toUpperCase() === "POST" && init && typeof init.body === "string") {
+          var newBody = tryInjectVoiceFlags(init.body, "fetch");
+          if (newBody) {
+            init = Object.assign({}, init, { body: newBody });
+          }
+        }
+      } catch (e) {
+        err("fetch patch blad:", e);
+      }
+      return origFetch.call(this, input, init);
+    };
+
+    return function () {
+      globalThis.fetch = origFetch;
+    };
+  }
+
+  function patchXHR() {
+    var proto = globalThis.XMLHttpRequest && globalThis.XMLHttpRequest.prototype;
+    if (!proto) {
+      log("XMLHttpRequest niedostepny.");
+      return null;
+    }
+
+    var origOpen = proto.open;
+    var origSend = proto.send;
+
+    proto.open = function (method, url) {
+      this.__rvm_method = method;
+      this.__rvm_url = url;
+      return origOpen.apply(this, arguments);
+    };
+
+    proto.send = function (body) {
+      try {
+        if (
+          this.__rvm_url &&
+          isMessagesUrl(this.__rvm_url) &&
+          String(this.__rvm_method).toUpperCase() === "POST" &&
+          typeof body === "string"
+        ) {
+          var newBody = tryInjectVoiceFlags(body, "xhr");
+          if (newBody) {
+            body = newBody;
+          }
+        }
+      } catch (e) {
+        err("xhr patch blad:", e);
+      }
+      return origSend.call(this, body);
+    };
+
+    return function () {
+      proto.open = origOpen;
+      proto.send = origSend;
+    };
   }
 
   function onLoad() {
-    var report = {};
+    var hooked = [];
+    var diag = {
+      typeofFetch: typeof globalThis.fetch,
+      typeofXHR: typeof globalThis.XMLHttpRequest,
+      fetchErr: null,
+      xhrErr: null,
+    };
 
     try {
-      report.sendMessageModKeys = safeKeys(["sendMessage"]);
-      report.restPostModKeys = safeKeys(["post", "get", "put", "patch", "del"]);
-      report.restPostOnlyKeys = safeKeys(["post", "get"]);
-      report.apiBaseModKeys = safeKeys(["getAPIBaseURL"]);
-      report.cloudUploadModKeys = safeKeys(["CloudUpload"]);
-      report.endpointsModKeys = safeKeys(["Endpoints"]);
-      report.httpClientModKeys = safeKeys(["HTTPClient"]);
-
-      report.typeofFetch = typeof globalThis.fetch;
-      report.typeofXHR = typeof globalThis.XMLHttpRequest;
-      report.fetchDescriptor = (function () {
-        try {
-          var d = Object.getOwnPropertyDescriptor(globalThis, "fetch");
-          return d ? JSON.stringify({ writable: d.writable, configurable: d.configurable, hasGetSet: !!(d.get || d.set) }) : "no-descriptor";
-        } catch (e) {
-          return "err:" + e;
-        }
-      })();
-
-      clip("RVM module scan:\n" + JSON.stringify(report, null, 2));
-      toast("RVM: skan zapisany na schowek (nic nie patchowane)");
-      log("Skan zakonczony:", report);
+      var unFetch = patchFetch();
+      if (unFetch) {
+        unpatchers.push(unFetch);
+        hooked.push("fetch");
+      } else {
+        diag.fetchErr = "patchFetch zwrocilo null";
+      }
     } catch (e) {
-      toast("RVM scan blad: " + e);
-      log("Blad skanu:", e);
+      diag.fetchErr = String((e && e.message) || e);
+      err("patchFetch blad:", e);
     }
+
+    try {
+      var unXhr = patchXHR();
+      if (unXhr) {
+        unpatchers.push(unXhr);
+        hooked.push("xhr");
+      } else {
+        diag.xhrErr = "patchXHR zwrocilo null";
+      }
+    } catch (e) {
+      diag.xhrErr = String((e && e.message) || e);
+      err("patchXHR blad:", e);
+    }
+
+    toast("RealVoiceMessage zaladowany: " + (hooked.join(",") || "NIC - BLAD"));
+    clip("RVM diag onLoad:\n" + JSON.stringify(diag, null, 2));
+    log("Zaladowano, podpieto pod:", hooked.join(","), "diag:", diag);
   }
 
   function onUnload() {
-    log("Odladowano (ten build nic nie patchuje).");
+    unpatchers.forEach(function (u) {
+      try {
+        u();
+      } catch (e) {}
+    });
+    unpatchers = [];
+    log("Odladowano.");
   }
 
   return { onLoad: onLoad, onUnload: onUnload };
