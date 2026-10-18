@@ -1,7 +1,7 @@
 (function () {
-  var VOICE_MESSAGE_FLAG = 1 << 13; // 8192 - ta sama flaga co w oficjalnym kliencie Discorda
-  var DEFAULT_WAVEFORM = "AEtWPyUaGA4OEAcA"; // placka fala, wplywa tylko na wyglad paskow
-  var DEFAULT_DURATION = 4; // sekundy, fallback gdy nie da sie odczytac realnego czasu
+  var VOICE_MESSAGE_FLAG = 1 << 13; // 8192
+  var DEFAULT_WAVEFORM = "AEtWPyUaGA4OEAcA";
+  var DEFAULT_DURATION = 4;
 
   var unpatchers = [];
 
@@ -17,110 +17,94 @@
   }
   function toast(msg) {
     try {
-      vendetta.ui.toasts.showToast(msg);
+      vendetta.ui.toasts.showToast(String(msg).slice(0, 180));
     } catch (e) {}
   }
 
-  function isAudioAttachment(att) {
-    if (!att) return false;
-    if (att.content_type && att.content_type.indexOf("audio") === 0) return true;
-    if (att.mimeType && att.mimeType.indexOf("audio") === 0) return true;
-    if (att.filename && /\.(ogg|opus|mp3|m4a|wav|aac|flac)$/i.test(att.filename)) return true;
+  function safeKeys(obj, depth) {
+    if (!obj || typeof obj !== "object" || depth <= 0) return obj;
+    var out = {};
+    for (var k in obj) {
+      try {
+        var v = obj[k];
+        if (v === null || v === undefined) { out[k] = v; continue; }
+        var t = typeof v;
+        if (t === "function") { out[k] = "[fn]"; continue; }
+        if (t === "object") {
+          if (Array.isArray(v)) {
+            out[k] = v.slice(0, 3).map(function (item) { return safeKeys(item, depth - 1); });
+          } else {
+            out[k] = safeKeys(v, depth - 1);
+          }
+          continue;
+        }
+        out[k] = v;
+      } catch (e) {
+        out[k] = "[err]";
+      }
+    }
+    return out;
+  }
+
+  function isAudio(mime, filename) {
+    if (mime && mime.indexOf("audio") === 0) return true;
+    if (filename && /\.(ogg|opus|mp3|m4a|wav|aac|flac)$/i.test(filename)) return true;
     return false;
   }
 
-  function findAudioIndex(attachments) {
-    if (!attachments) return -1;
-    for (var i = 0; i < attachments.length; i++) {
-      if (isAudioAttachment(attachments[i])) return i;
-    }
-    return -1;
-  }
-
-  // AUTOMAT: kazda wiadomosc z DOKLADNIE jednym zalacznikiem audio, bez wlasnego
-  // tekstu, dostaje flage 8192 (prawdziwa glosowka) - tak jak dziala to w oryginalnym
-  // pluginie Kettu, tylko tu robimy to NA WIADOMOSCI (REST), a nie na lokalnym uploadzie,
-  // zeby bylo widoczne u kazdego odbiorcy, nie tylko w Kettu.
-  function transformBody(body) {
-    if (!body) return false;
-    if (body.content && body.content.trim().length > 0) return false; // zostaw zwykle wiadomosci z tekstem w spokoju
-    if ((body.flags || 0) & VOICE_MESSAGE_FLAG) return false; // juz jest glosowka
-
-    var attachments = body.attachments;
-    if (!attachments || attachments.length !== 1) return false;
-
-    var idx = findAudioIndex(attachments);
-    if (idx === -1) return false;
-
-    body.flags = (body.flags || 0) | VOICE_MESSAGE_FLAG;
-
-    var att = attachments[idx];
-    att.waveform = att.waveform || DEFAULT_WAVEFORM;
-    att.duration_secs = att.duration_secs || DEFAULT_DURATION;
-
-    return true;
-  }
-
-  function findRest() {
-    var candidates = [
-      ["post", "get", "put", "patch", "del"],
-      ["post", "get", "put", "patch"],
-      ["getAPIBaseURL", "post"],
-      ["post", "patch", "put"],
-    ];
-    var tried = [];
-    for (var i = 0; i < candidates.length; i++) {
-      try {
-        var mod = vendetta.metro.findByProps.apply(null, candidates[i]);
-        tried.push(candidates[i].join(",") + "=" + (mod ? "found" : "null"));
-        if (mod && typeof mod.post === "function") {
-          log("Znaleziono modul REST po propsach:", candidates[i].join(","));
-          return mod;
-        }
-      } catch (e) {
-        tried.push(candidates[i].join(",") + "=blad:" + e);
-      }
-    }
-    err("Zaden kandydat nie trafil REST:", tried.join(" | "));
-    return null;
-  }
-
   function onLoad() {
-    var RestAPI = findRest();
+    var found = [];
+    var names = ["uploadLocalFiles", "CloudUpload"];
 
-    if (!RestAPI) {
-      toast("RealVoiceMessage: BLAD - nie znalazlem modulu REST");
-      return;
-    }
-
-    try {
-      var unpatch = vendetta.patcher.before("post", RestAPI, function (args) {
-        try {
-          var config = args[0];
-          var url = config && config.url;
-          var attCount = config && config.body && config.body.attachments ? config.body.attachments.length : -1;
-          toast("RVM post: " + url + " att=" + attCount);
-          log("post widziany:", url, "attachments:", attCount, "body:", JSON.stringify(config && config.body));
-
-          if (!config || typeof config.url !== "string") return;
-          if (!/\/channels\/\d+\/messages$/.test(config.url)) return;
-
-          if (transformBody(config.body)) {
-            log("Wyslano jako glosowke, url:", config.url);
-            toast("RVM: oznaczono jako glosowke!");
-          }
-        } catch (e) {
-          err("Blad podczas przechwytywania zapytania:", e);
-          toast("RVM blad w patchu: " + e);
+    names.forEach(function (name) {
+      try {
+        var mod = vendetta.metro.findByProps(name);
+        if (!mod) {
+          log("Nie znaleziono modulu dla:", name);
+          return;
         }
-      });
-      unpatchers.push(unpatch);
-      toast("RealVoiceMessage: zaladowany OK");
-      log("Zaladowano, podpieto pod post().");
-    } catch (e) {
-      err("Nie udalo sie podpiac patchera:", e);
-      toast("RealVoiceMessage: BLAD patchera - " + e);
-    }
+        found.push(name);
+
+        var unpatch = vendetta.patcher.before(name, mod, function (args) {
+          try {
+            var a0 = args[0];
+            var item = (a0 && a0.items && a0.items[0]) || a0;
+            var mime = item && (item.mimeType || item.type);
+            var filename = item && (item.filename || item.name);
+
+            var dump = safeKeys(a0, 3);
+            toast("RVM[" + name + "] mime=" + mime + " file=" + filename);
+            log("RVM[" + name + "] arg dump:", JSON.stringify(dump));
+
+            if (item && isAudio(mime, filename)) {
+              item.mimeType = "audio/ogg";
+              item.waveform = DEFAULT_WAVEFORM;
+              item.durationSecs = DEFAULT_DURATION;
+              item.duration_secs = DEFAULT_DURATION;
+              item.isVoiceMessage = true;
+              item.flags = VOICE_MESSAGE_FLAG;
+              if (a0.message) {
+                a0.message.flags = (a0.message.flags || 0) | VOICE_MESSAGE_FLAG;
+              }
+              if (a0.options) {
+                a0.options.flags = (a0.options.flags || 0) | VOICE_MESSAGE_FLAG;
+                a0.options.isVoiceMessage = true;
+              }
+              toast("RVM[" + name + "]: oznaczono audio");
+            }
+          } catch (e) {
+            err("Blad w patchu", name, ":", e);
+            toast("RVM blad [" + name + "]: " + e);
+          }
+        });
+        unpatchers.push(unpatch);
+      } catch (e) {
+        err("Nie udalo sie podpiac pod:", name, e);
+      }
+    });
+
+    toast("RealVoiceMessage zaladowany, podpieto: " + (found.join(",") || "NIC"));
+    log("Zaladowano, podpieto pod:", found.join(","));
   }
 
   function onUnload() {
