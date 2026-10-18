@@ -2,7 +2,6 @@
   var VOICE_MESSAGE_FLAG = 1 << 13; // 8192 - ta sama flaga co w oficjalnym kliencie Discorda
   var DEFAULT_WAVEFORM = "AEtWPyUaGA4OEAcA"; // placka fala, wplywa tylko na wyglad paskow
   var DEFAULT_DURATION = 4; // sekundy, fallback gdy nie da sie odczytac realnego czasu
-  var PREFIX = "/voice";
 
   var unpatchers = [];
 
@@ -38,74 +37,83 @@
     return -1;
   }
 
-  // Przerabia body zapytania REST POST /channels/:id/messages na "glosowke" -
-  // dokladnie to samo co robi dzialajacy juz plugin na Macu (Equicord voiceMessages):
-  // flaga 8192 NA WIADOMOSCI (nie na lokalnym uploadzie!) + waveform/duration_secs
-  // na zalaczniku. To wlasnie ten poziom sprawia ze widzi to KAZDY odbiorca.
+  // AUTOMAT: kazda wiadomosc z DOKLADNIE jednym zalacznikiem audio, bez wlasnego
+  // tekstu, dostaje flage 8192 (prawdziwa glosowka) - tak jak dziala to w oryginalnym
+  // pluginie Kettu, tylko tu robimy to NA WIADOMOSCI (REST), a nie na lokalnym uploadzie,
+  // zeby bylo widoczne u kazdego odbiorcy, nie tylko w Kettu.
   function transformBody(body) {
-    if (!body || typeof body.content !== "string") return false;
-    if (body.content.indexOf(PREFIX) !== 0) return false;
+    if (!body) return false;
+    if (body.content && body.content.trim().length > 0) return false; // zostaw zwykle wiadomosci z tekstem w spokoju
+    if ((body.flags || 0) & VOICE_MESSAGE_FLAG) return false; // juz jest glosowka
 
-    var idx = findAudioIndex(body.attachments);
-    if (idx === -1) {
-      toast("RealVoiceMessage: dolacz plik audio przed wyslaniem /voice");
-      return false;
-    }
+    var attachments = body.attachments;
+    if (!attachments || attachments.length !== 1) return false;
 
-    body.content = body.content.slice(PREFIX.length).replace(/^\s/, "");
+    var idx = findAudioIndex(attachments);
+    if (idx === -1) return false;
+
     body.flags = (body.flags || 0) | VOICE_MESSAGE_FLAG;
 
-    var att = body.attachments[idx];
+    var att = attachments[idx];
     att.waveform = att.waveform || DEFAULT_WAVEFORM;
     att.duration_secs = att.duration_secs || DEFAULT_DURATION;
 
     return true;
   }
 
-  // Probujemy znalezc modul REST po kilku najbardziej prawdopodobnych zestawach propsow.
   function findRest() {
     var candidates = [
       ["post", "get", "put", "patch", "del"],
       ["post", "get", "put", "patch"],
       ["getAPIBaseURL", "post"],
+      ["post", "patch", "put"],
     ];
+    var tried = [];
     for (var i = 0; i < candidates.length; i++) {
       try {
         var mod = vendetta.metro.findByProps.apply(null, candidates[i]);
-        if (mod && mod.post) {
+        tried.push(candidates[i].join(",") + "=" + (mod ? "found" : "null"));
+        if (mod && typeof mod.post === "function") {
           log("Znaleziono modul REST po propsach:", candidates[i].join(","));
           return mod;
         }
-      } catch (e) {}
+      } catch (e) {
+        tried.push(candidates[i].join(",") + "=blad:" + e);
+      }
     }
+    err("Zaden kandydat nie trafil REST:", tried.join(" | "));
     return null;
   }
 
   function onLoad() {
     var RestAPI = findRest();
+
     if (!RestAPI) {
-      err("Nie znalazlem modulu REST - API Kettu moglo sie zmienic.");
-      toast("RealVoiceMessage: nie moge sie podpiac pod wysylke (zglos Tomkowi)");
+      toast("RealVoiceMessage: BLAD - nie znalazlem modulu REST");
       return;
     }
 
-    var unpatch = vendetta.patcher.before("post", RestAPI, function (args) {
-      try {
-        var config = args[0];
-        if (!config || typeof config.url !== "string") return;
-        if (!/\/channels\/\d+\/messages$/.test(config.url)) return;
+    try {
+      var unpatch = vendetta.patcher.before("post", RestAPI, function (args) {
+        try {
+          var config = args[0];
+          if (!config || typeof config.url !== "string") return;
+          if (!/\/channels\/\d+\/messages$/.test(config.url)) return;
 
-        if (transformBody(config.body)) {
-          log("Wyslano jako glosowke, url:", config.url);
-          toast("Wysylam jako glosowke...");
+          if (transformBody(config.body)) {
+            log("Wyslano jako glosowke, url:", config.url);
+          }
+        } catch (e) {
+          err("Blad podczas przechwytywania zapytania:", e);
         }
-      } catch (e) {
-        err("Blad podczas przechwytywania zapytania:", e);
-      }
-    });
-
-    unpatchers.push(unpatch);
-    log("Zaladowano.");
+      });
+      unpatchers.push(unpatch);
+      toast("RealVoiceMessage: zaladowany OK");
+      log("Zaladowano, podpieto pod post().");
+    } catch (e) {
+      err("Nie udalo sie podpiac patchera:", e);
+      toast("RealVoiceMessage: BLAD patchera - " + e);
+    }
   }
 
   function onUnload() {
