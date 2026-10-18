@@ -15,16 +15,6 @@
       vendetta.logger.error.apply(null, ["[RealVoiceMessage]"].concat(Array.prototype.slice.call(arguments)));
     } catch (e) {}
   }
-  function toast(msg) {
-    try {
-      vendetta.ui.toasts.showToast(String(msg).slice(0, 180));
-    } catch (e) {}
-  }
-  function clip(text) {
-    try {
-      vendetta.metro.common.clipboard.setString(String(text));
-    } catch (e) {}
-  }
 
   function isMessagesUrl(url) {
     return typeof url === "string" && /\/channels\/\d+\/messages(\?.*)?$/.test(url);
@@ -34,11 +24,15 @@
     return /\.(ogg|opus|mp3|m4a|wav|aac|flac)$/i.test(String(fn || ""));
   }
 
-  function tryInjectVoiceFlags(bodyStr, tag) {
+  // Jesli body to pojedyncza wiadomosc z dokladnie jednym zalacznikiem audio
+  // i bez wlasnego tekstu, dopisuje flage VOICE_MESSAGE oraz
+  // duration_secs/waveform na zalaczniku - dokladnie to, czego Discord
+  // wymaga zeby uznac wiadomosc za prawdziwa glosowke (widoczna u kazdego
+  // odbiorcy, nie tylko w Kettu). Zwraca zmieniony JSON (string) albo null,
+  // jesli nic nie trzeba bylo zmieniac.
+  function tryInjectVoiceFlags(bodyStr) {
     try {
       var body = JSON.parse(bodyStr);
-
-      clip("RVM[" + tag + "] RAW body przed zmiana:\n" + JSON.stringify(body));
 
       var atts = body && body.attachments;
       if (!Array.isArray(atts) || atts.length !== 1) return null;
@@ -53,24 +47,17 @@
       if (att.duration_secs === undefined || att.duration_secs === null) att.duration_secs = DEFAULT_DURATION;
       if (!att.waveform) att.waveform = DEFAULT_WAVEFORM;
 
-      var out = JSON.stringify(body);
-      toast("RVM[" + tag + "]: wstrzykniety flags=" + body.flags + " w realnym requescie");
-      clip("RVM[" + tag + "] body PO zmianie:\n" + out);
-      log("RVM[" + tag + "] zmieniono body:", out);
-      return out;
+      log("Oznaczono jako glosowke, flags:", body.flags);
+      return JSON.stringify(body);
     } catch (e) {
       err("tryInjectVoiceFlags blad:", e);
-      toast("RVM[" + tag + "] blad parsowania: " + e);
       return null;
     }
   }
 
   function patchFetch() {
     var origFetch = globalThis.fetch;
-    if (typeof origFetch !== "function") {
-      log("globalThis.fetch niedostepny.");
-      return null;
-    }
+    if (typeof origFetch !== "function") return null;
 
     globalThis.fetch = function (input, init) {
       try {
@@ -78,7 +65,7 @@
         var method = (init && init.method) || (typeof input === "object" && input && input.method) || "GET";
 
         if (isMessagesUrl(url) && String(method).toUpperCase() === "POST" && init && typeof init.body === "string") {
-          var newBody = tryInjectVoiceFlags(init.body, "fetch");
+          var newBody = tryInjectVoiceFlags(init.body);
           if (newBody) {
             init = Object.assign({}, init, { body: newBody });
           }
@@ -96,10 +83,7 @@
 
   function patchXHR() {
     var proto = globalThis.XMLHttpRequest && globalThis.XMLHttpRequest.prototype;
-    if (!proto) {
-      log("XMLHttpRequest niedostepny.");
-      return null;
-    }
+    if (!proto) return null;
 
     var origOpen = proto.open;
     var origSend = proto.send;
@@ -118,7 +102,7 @@
           String(this.__rvm_method).toUpperCase() === "POST" &&
           typeof body === "string"
         ) {
-          var newBody = tryInjectVoiceFlags(body, "xhr");
+          var newBody = tryInjectVoiceFlags(body);
           if (newBody) {
             body = newBody;
           }
@@ -136,43 +120,21 @@
   }
 
   function onLoad() {
-    var hooked = [];
-    var diag = {
-      typeofFetch: typeof globalThis.fetch,
-      typeofXHR: typeof globalThis.XMLHttpRequest,
-      fetchErr: null,
-      xhrErr: null,
-    };
-
     try {
       var unFetch = patchFetch();
-      if (unFetch) {
-        unpatchers.push(unFetch);
-        hooked.push("fetch");
-      } else {
-        diag.fetchErr = "patchFetch zwrocilo null";
-      }
+      if (unFetch) unpatchers.push(unFetch);
     } catch (e) {
-      diag.fetchErr = String((e && e.message) || e);
       err("patchFetch blad:", e);
     }
 
     try {
       var unXhr = patchXHR();
-      if (unXhr) {
-        unpatchers.push(unXhr);
-        hooked.push("xhr");
-      } else {
-        diag.xhrErr = "patchXHR zwrocilo null";
-      }
+      if (unXhr) unpatchers.push(unXhr);
     } catch (e) {
-      diag.xhrErr = String((e && e.message) || e);
       err("patchXHR blad:", e);
     }
 
-    toast("RealVoiceMessage zaladowany: " + (hooked.join(",") || "NIC - BLAD"));
-    clip("RVM diag onLoad:\n" + JSON.stringify(diag, null, 2));
-    log("Zaladowano, podpieto pod:", hooked.join(","), "diag:", diag);
+    log("RealVoiceMessage zaladowany, podpieto pod:", unpatchers.length, "hooki.");
   }
 
   function onUnload() {
