@@ -142,14 +142,24 @@
 
   function onLoad() {
     var hooked = [];
+    var diag = {
+      typeofGlobalFetch: typeof global.fetch,
+      typeofXHR: typeof global.XMLHttpRequest,
+      typeofXHRProto: typeof (global.XMLHttpRequest && global.XMLHttpRequest.prototype),
+      fetchErr: null,
+      xhrErr: null,
+    };
 
     try {
       var unFetch = patchFetch();
       if (unFetch) {
         unpatchers.push(unFetch);
         hooked.push("fetch");
+      } else {
+        diag.fetchErr = "patchFetch zwrocilo null (fetch niedostepny)";
       }
     } catch (e) {
+      diag.fetchErr = String((e && e.message) || e);
       err("patchFetch blad:", e);
     }
 
@@ -158,13 +168,17 @@
       if (unXhr) {
         unpatchers.push(unXhr);
         hooked.push("xhr");
+      } else {
+        diag.xhrErr = "patchXHR zwrocilo null (XHR niedostepny)";
       }
     } catch (e) {
+      diag.xhrErr = String((e && e.message) || e);
       err("patchXHR blad:", e);
     }
 
     toast("RealVoiceMessage zaladowany: " + (hooked.join(",") || "NIC - BLAD"));
-    log("Zaladowano, podpieto pod:", hooked.join(","));
+    clip("RVM diag onLoad:\n" + JSON.stringify(diag, null, 2));
+    log("Zaladowano, podpieto pod:", hooked.join(","), "diag:", diag);
   }
 
   function onUnload() {
