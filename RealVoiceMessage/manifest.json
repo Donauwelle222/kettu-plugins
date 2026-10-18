@@ -1,7 +1,8 @@
 {
   "name": "RealVoiceMessage",
-  "description": "Wysyla dowolny plik audio jako PRAWDZIWA glosowke Discorda (ustawia te sama flage/waveform/duration co oficjalny klient), widoczna poprawnie u kazdego odbiorcy - nie tylko w Kettu.",
+  "description": "Wysyla dowolny plik audio jako PRAWDZIWA glosowke Discorda (flaga/waveform/duration na wiadomosci, nie na lokalnym uploadzie) - widoczna poprawnie u kazdego odbiorcy, nie tylko w Kettu.",
   "authors": [{ "name": "Juniorsky", "id": "0" }],
   "main": "index.js",
-  "version": "1.0.0"
+  "vendetta": { "icon": "voice_bar_mute_off" },
+  "hash": "6b2f0980c6883dcc9f2d85a9350b6f09f012ef9aa0fc0c7193b7745218f54c9f"
 }

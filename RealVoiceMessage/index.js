@@ -1,135 +1,122 @@
-// RealVoiceMessage — plugin dla Kettu (rodzina Vendetta/Bunny/Revenge)
-//
-// CO ROBI: wysyla zalaczony plik audio jako PRAWDZIWA glosowke Discorda - czyli dokladnie
-// ten sam trik co dziala juz na Macu w Equicordzie (plugin "voiceMessages"): ustawia w
-// zapytaniu REST do Discorda flage VOICE_MESSAGE (1 << 13) oraz pola waveform/duration_secs
-// na zalaczniku. To wlasnie te trzy rzeczy sprawiaja ze Discord (backend, nie klient!) uznaje
-// wiadomosc za glosowke - wiec widzi ja poprawnie KAZDY odbiorca, na kazdym kliencie, nie
-// tylko w Kettu. Kod REST payloadu ponizej jest 1:1 skopiowany z dzialajacego juz pluginu na
-// Macu (patrz Discord_Vencord_Equicord_Custom_Plugins w vaulcie) - ta czesc jest sprawdzona.
-//
-// NIEPEWNA CZESC (normalne przy kazdym modzie mobilnym, moze wymagac debugowania na zywo):
-// to, pod jaka dokladnie nazwa/ksztaltem Kettu udostepnia modul do robienia zapytan REST.
-// Ponizej probujemy kilku najbardziej prawdopodobnych nazw po kolei i piszemy do logu/toastu
-// ktora zadzialala (albo ze zadna nie zadzialala) - zeby latwo bylo to poprawic na podstawie
-// zrzutu ekranu z bledem.
-//
-// UZYCIE: w oknie czatu dolacz plik audio normalnie (spinacz/plus), i na POCZATKU tresci
-// wiadomosci wpisz dokladnie "/voice" (reszta tekstu po spacji jest opcjonalna i zostanie
-// wyslana jako podpis). Plugin przechwyci wysylke, zdejmie prefiks "/voice " z tresci, doda
-// wlasciwe flagi/metadane do zalacznika audio i wysle jako prawdziwa glosowke.
+(function () {
+  var VOICE_MESSAGE_FLAG = 1 << 13; // 8192 - ta sama flaga co w oficjalnym kliencie Discorda
+  var DEFAULT_WAVEFORM = "AEtWPyUaGA4OEAcA"; // placka fala, wplywa tylko na wyglad paskow
+  var DEFAULT_DURATION = 4; // sekundy, fallback gdy nie da sie odczytac realnego czasu
+  var PREFIX = "/voice";
 
-const VOICE_MESSAGE_FLAG = 1 << 13; // 8192 - ta sama flaga co w oficjalnym kliencie Discorda
-const DEFAULT_WAVEFORM = "AAAAAAAAAAAA"; // placka fala - wplywa TYLKO na wyglad paskow, nie na
-                                          // to czy wiadomosc "liczy sie" jako glosowka
-const DEFAULT_DURATION_SECS = 4; // fallback gdy nie da sie odczytac realnego czasu trwania
+  var unpatchers = [];
 
-const PREFIX = "/voice";
+  function log() {
+    try {
+      vendetta.logger.log.apply(null, ["[RealVoiceMessage]"].concat(Array.prototype.slice.call(arguments)));
+    } catch (e) {}
+  }
+  function err() {
+    try {
+      vendetta.logger.error.apply(null, ["[RealVoiceMessage]"].concat(Array.prototype.slice.call(arguments)));
+    } catch (e) {}
+  }
+  function toast(msg) {
+    try {
+      vendetta.ui.toasts.showToast(msg);
+    } catch (e) {}
+  }
 
-let unpatch = null;
-
-function log(...args) {
-    try { vendetta?.logger?.log?.("[RealVoiceMessage]", ...args); } catch (e) { /* noop */ }
-}
-function err(...args) {
-    try { vendetta?.logger?.error?.("[RealVoiceMessage]", ...args); } catch (e) { /* noop */ }
-}
-function toast(message, type) {
-    try { vendetta?.ui?.toasts?.showToast?.(message, { type }); } catch (e) { /* noop */ }
-}
-
-function isAudioAttachment(att) {
+  function isAudioAttachment(att) {
     if (!att) return false;
-    if (att.content_type?.startsWith?.("audio/")) return true;
-    if (att.mimeType?.startsWith?.("audio/")) return true;
+    if (att.content_type && att.content_type.indexOf("audio") === 0) return true;
+    if (att.mimeType && att.mimeType.indexOf("audio") === 0) return true;
     if (att.filename && /\.(ogg|opus|mp3|m4a|wav|aac|flac)$/i.test(att.filename)) return true;
     return false;
-}
+  }
 
-function findAudioAttachmentIndex(attachments) {
-    if (!Array.isArray(attachments)) return -1;
-    return attachments.findIndex(isAudioAttachment);
-}
+  function findAudioIndex(attachments) {
+    if (!attachments) return -1;
+    for (var i = 0; i < attachments.length; i++) {
+      if (isAudioAttachment(attachments[i])) return i;
+    }
+    return -1;
+  }
 
-// Przerabia body zapytania REST POST /channels/:id/messages na "glosowke", JESLI
-// tresc wiadomosci zaczyna sie od "/voice" i jest dokladnie jeden zalacznik audio.
-// Zwraca true jesli cos zmienilo (do logowania).
-function tryTransformBody(body) {
+  // Przerabia body zapytania REST POST /channels/:id/messages na "glosowke" -
+  // dokladnie to samo co robi dzialajacy juz plugin na Macu (Equicord voiceMessages):
+  // flaga 8192 NA WIADOMOSCI (nie na lokalnym uploadzie!) + waveform/duration_secs
+  // na zalaczniku. To wlasnie ten poziom sprawia ze widzi to KAZDY odbiorca.
+  function transformBody(body) {
     if (!body || typeof body.content !== "string") return false;
-    if (!body.content.startsWith(PREFIX)) return false;
+    if (body.content.indexOf(PREFIX) !== 0) return false;
 
-    const attachments = body.attachments;
-    const idx = findAudioAttachmentIndex(attachments);
+    var idx = findAudioIndex(body.attachments);
     if (idx === -1) {
-        toast("RealVoiceMessage: dolacz plik audio przed wyslaniem /voice", "danger");
-        return false;
+      toast("RealVoiceMessage: dolacz plik audio przed wyslaniem /voice");
+      return false;
     }
 
     body.content = body.content.slice(PREFIX.length).replace(/^\s/, "");
     body.flags = (body.flags || 0) | VOICE_MESSAGE_FLAG;
 
-    const attachment = attachments[idx];
-    attachment.waveform = attachment.waveform || DEFAULT_WAVEFORM;
-    attachment.duration_secs = attachment.duration_secs || DEFAULT_DURATION_SECS;
+    var att = body.attachments[idx];
+    att.waveform = att.waveform || DEFAULT_WAVEFORM;
+    att.duration_secs = att.duration_secs || DEFAULT_DURATION;
 
     return true;
-}
+  }
 
-// Probujemy znalezc modul REST pod kilkoma najbardziej prawdopodobnymi "sygnaturami".
-// findByProps w rodzinie Vendetta/Bunny zwraca modul ktory ma WSZYSTKIE podane klucze.
-function findRestModule() {
-    const { findByProps } = vendetta.metro;
-    const candidates = [
-        ["post", "get", "put", "patch", "del"],
-        ["post", "get", "put", "patch"],
-        ["getAPIBaseURL", "post"],
+  // Probujemy znalezc modul REST po kilku najbardziej prawdopodobnych zestawach propsow.
+  function findRest() {
+    var candidates = [
+      ["post", "get", "put", "patch", "del"],
+      ["post", "get", "put", "patch"],
+      ["getAPIBaseURL", "post"],
     ];
-    for (const props of candidates) {
-        try {
-            const mod = findByProps(...props);
-            if (mod?.post) {
-                log("Znaleziono modul REST po propsach:", props.join(","));
-                return mod;
-            }
-        } catch (e) { /* probuj dalej */ }
+    for (var i = 0; i < candidates.length; i++) {
+      try {
+        var mod = vendetta.metro.findByProps.apply(null, candidates[i]);
+        if (mod && mod.post) {
+          log("Znaleziono modul REST po propsach:", candidates[i].join(","));
+          return mod;
+        }
+      } catch (e) {}
     }
     return null;
-}
+  }
 
-function onLoad() {
-    const RestAPI = findRestModule();
-
+  function onLoad() {
+    var RestAPI = findRest();
     if (!RestAPI) {
-        err("Nie znalazlem modulu REST (RestAPI) - API klienta Kettu moglo sie zmienic.");
-        toast("RealVoiceMessage: nie moge sie podpiac pod wysylke (zglos Tomkowi ze findByProps nie trafil)", "danger");
-        return;
+      err("Nie znalazlem modulu REST - API Kettu moglo sie zmienic.");
+      toast("RealVoiceMessage: nie moge sie podpiac pod wysylke (zglos Tomkowi)");
+      return;
     }
 
-    const { before } = vendetta.patcher;
+    var unpatch = vendetta.patcher.before("post", RestAPI, function (args) {
+      try {
+        var config = args[0];
+        if (!config || typeof config.url !== "string") return;
+        if (!/\/channels\/\d+\/messages$/.test(config.url)) return;
 
-    unpatch = before("post", RestAPI, (args) => {
-        try {
-            const config = args[0];
-            if (!config || typeof config.url !== "string") return;
-            if (!/\/channels\/\d+\/messages$/.test(config.url)) return;
-
-            const changed = tryTransformBody(config.body);
-            if (changed) {
-                log("Wyslano jako glosowke, url:", config.url);
-                toast("Wysylam jako glosowke...", "success");
-            }
-        } catch (e) {
-            err("Blad podczas przechwytywania zapytania:", e);
+        if (transformBody(config.body)) {
+          log("Wyslano jako glosowke, url:", config.url);
+          toast("Wysylam jako glosowke...");
         }
+      } catch (e) {
+        err("Blad podczas przechwytywania zapytania:", e);
+      }
     });
 
+    unpatchers.push(unpatch);
     log("Zaladowano.");
-}
+  }
 
-function onUnload() {
-    try { unpatch?.(); } catch (e) { /* noop */ }
-    unpatch = null;
+  function onUnload() {
+    unpatchers.forEach(function (u) {
+      try {
+        u();
+      } catch (e) {}
+    });
+    unpatchers = [];
     log("Odladowano.");
-}
+  }
 
-module.exports = { onLoad, onUnload };
+  return { onLoad: onLoad, onUnload: onUnload };
+})();
